@@ -1,0 +1,10 @@
+prefect==2.20.18
+pymupdf
+pandas
+pyarrow
+boto3
+httpx
+qdrant-client
+fastapi
+uvicorn
+pydantic
