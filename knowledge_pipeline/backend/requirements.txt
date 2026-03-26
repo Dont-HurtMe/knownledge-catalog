@@ -1,5 +1,0 @@
-Django>=4.2
-djangorestframework
-psycopg2-binary
-boto3
-httpx
