@@ -1,0 +1,59 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15-alpine
+    env_file: .env
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    env_file: .env
+    volumes:
+      - ./volumes/minio:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  qdrant:
+    image: qdrant/qdrant
+    env_file: .env
+    volumes:
+      - ./volumes/qdrant:/qdrant/storage
+    ports:
+      - "6333:6333"
+
+  prefect:
+    # 🟢 ล็อคเวอร์ชัน Server ให้เป็น 2.20.18 ชัดเจน
+    image: prefecthq/prefect:2.20.18-python3.11 
+    command: prefect server start --host 0.0.0.0
+    env_file: .env
+    ports:
+      - "4200:4200"
+    depends_on:
+      - postgres
+
+  backend:
+    build: ./backend
+    env_file: .env
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8001:8001"
+    depends_on:
+      - postgres
+
+  worker:
+    build: ./worker
+    env_file: .env
+    volumes:
+      - ./worker:/app
+    ports:
+      - "8002:8002"
+    depends_on:
+      - prefect
+      - minio
+      - backend
