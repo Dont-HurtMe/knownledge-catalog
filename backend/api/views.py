@@ -13,6 +13,8 @@ S3_ENDPOINT = os.environ.get('S3_ENDPOINT_URL', 'http://minio:9000')
 S3_ACCESS = os.environ.get('S3_ACCESS_KEY', 'admin')
 S3_SECRET = os.environ.get('S3_SECRET_KEY', 'qwer1234')
 BUCKET_NAME = os.environ.get('S3_BUCKET_NAME', 'knowledge-base')
+VERIFY_SSL = os.environ.get('VERIFY_SSL', 'True').lower() in ('true', '1', 't')
+
 s3 = boto3.client('s3', endpoint_url=S3_ENDPOINT, aws_access_key_id=S3_ACCESS, aws_secret_access_key=S3_SECRET)
 
 def get_safe_filename(original_name: str, doc_id: uuid.UUID) -> str:
@@ -73,7 +75,7 @@ def upload_document(request):
         }
         
         try:
-            httpx.post('http://worker:8002/webhook/ingest', json=payload, timeout=5)
+            httpx.post('http://worker:8002/webhook/ingest', json=payload, timeout=5, verify=VERIFY_SSL)
         except Exception:
             pass
             
@@ -118,11 +120,10 @@ def update_transaction(request, doc_id):
                 "doc_id": str(catalog.id), 
                 "provider": catalog.provider, 
                 "original_filename": catalog.original_filename,
-                "parquet_storage_path": parquet_minio_path,
-                "category": catalog.category
+                "parquet_storage_path": parquet_minio_path
             }
             try:
-                httpx.post('http://worker:8002/webhook/aggregate', json=payload, timeout=5)
+                httpx.post('http://worker:8002/webhook/aggregate', json=payload, timeout=5, verify=VERIFY_SSL)
             except Exception:
                 pass
 
