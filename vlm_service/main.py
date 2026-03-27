@@ -1,19 +1,29 @@
 import os
+import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from openai import OpenAI
 
 app = FastAPI(title="VLM Plug & Play Service")
 
+VERIFY_SSL = os.environ.get('VERIFY_SSL', 'True').lower() in ('true', '1', 't')
+http_client = httpx.Client(verify=VERIFY_SSL)
+
 client = OpenAI(
     base_url=os.getenv("VLM_API_BASE", "https://api.openai.com/v1"),
-    api_key=os.getenv("VLM_API_KEY", "dummy-key")
+    api_key=os.getenv("VLM_API_KEY", "dummy-key"),
+    http_client=http_client
 )
 MODEL_NAME = os.getenv("VLM_MODEL", "gpt-4o-mini")
 
 class VLMRequest(BaseModel):
     image_base64: str
-    prompt: str = "Extract all text from this image exactly as it appears. Do not add markdown formatting, headers, or any conversational text."
+    prompt: str = (
+        "Extract all text from this image exactly as it appears. "
+        "If diagrams or tables are found, provide a detailed description of the sequences, flow, or data contained within them instead of attempting to format them as tables. "
+        "For text in articles, abstracts, or scanned documents, perform a full raw text extraction. "
+        "Do not summarize the content, do not include markdown headers, and do not include any conversational or filler text."
+    )
 
 @app.post("/extract")
 def extract_text(req: VLMRequest):
@@ -32,7 +42,14 @@ def extract_text(req: VLMRequest):
                     ],
                 }
             ],
-            max_tokens=1500,
+            temperature=0.2, 
+            max_tokens=8192, 
+            extra_body={
+                "options": {
+                    "num_ctx": 16384,  
+                    "num_gpu": 99      
+                }
+            }
         )
         return {"text": response.choices[0].message.content}
     except Exception as e:
