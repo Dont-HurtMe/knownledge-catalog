@@ -16,6 +16,7 @@ S3_ACCESS = os.environ.get('S3_ACCESS_KEY', 'admin')
 S3_SECRET = os.environ.get('S3_SECRET_KEY', 'qwer1234')
 BUCKET_NAME = os.environ.get('S3_BUCKET_NAME', 'knowledge-base')
 DJANGO_API = os.environ.get('DJANGO_API_URL', 'http://backend:8001/api')
+VERIFY_SSL = os.environ.get('VERIFY_SSL', 'True').lower() in ('true', '1', 't')
 
 # --- 1. Custom Exceptions ---
 class PDFValidationError(Exception): pass
@@ -88,7 +89,7 @@ def vlm_page_task(doc_id: str, local_file_path: str, page_num: int, provider: st
         pix = page.get_pixmap()
         base64_image = base64.b64encode(pix.tobytes("jpeg")).decode('utf-8')
         
-        response = httpx.post("http://vlm:8003/extract", json={"image_base64": base64_image}, timeout=60.0)
+        response = httpx.post("http://vlm:8003/extract", json={"image_base64": base64_image}, timeout=60.0, verify=VERIFY_SSL)
         text_content = response.json().get("text", "")
         
         data = {
@@ -97,9 +98,9 @@ def vlm_page_task(doc_id: str, local_file_path: str, page_num: int, provider: st
             "strategy": fallback_reason, "text": text_content
         }
         save_temp_json(doc_id, page_num + 1, data)
-        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "SUCCESS", "strategy": fallback_reason})
+        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "SUCCESS", "strategy": fallback_reason}, verify=VERIFY_SSL)
     except Exception:
-        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "FAILED", "strategy": fallback_reason})
+        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "FAILED", "strategy": fallback_reason}, verify=VERIFY_SSL)
 
 @task
 def extract_page_task(doc_id: str, local_file_path: str, page_num: int, provider: str, original_filename: str):
@@ -115,20 +116,20 @@ def extract_page_task(doc_id: str, local_file_path: str, page_num: int, provider
             # ถ้าผ่านทั้งหมด เซฟแบบ RAW ได้เลย
             data = {"doc_id": doc_id, "original_filename": original_filename, "provider": provider, "page_number": page_num + 1, "strategy": "FITZ_RAW", "text": raw_text}
             save_temp_json(doc_id, page_num + 1, data)
-            httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "SUCCESS", "strategy": "FITZ_RAW"})
+            httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "SUCCESS", "strategy": "FITZ_RAW"}, verify=VERIFY_SSL)
             
         except PDFValidationError as e:
             # ถ้าโดนเตะออกจากเงื่อนไขใดเงื่อนไขหนึ่ง (Fallback to VLM)
             error_reason = f"VLM_{e.__class__.__name__}".upper()
             ext = os.path.splitext(original_filename)[1].lower()
             if ext in ['.pdf', '.png', '.jpg', '.jpeg']:
-                httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "PENDING_VLM", "strategy": "QUEUED_VLM"})
+                httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "PENDING_VLM", "strategy": "QUEUED_VLM"}, verify=VERIFY_SSL)
                 vlm_page_task.submit(doc_id, local_file_path, page_num, provider, original_filename, error_reason)
             else:
-                httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "FAILED", "strategy": "VLM_NOT_ALLOWED"})
+                httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "FAILED", "strategy": "VLM_NOT_ALLOWED"}, verify=VERIFY_SSL)
                 
     except Exception:
-        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "FAILED", "strategy": "ERROR"})
+        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": page_num+1, "status": "FAILED", "strategy": "ERROR"}, verify=VERIFY_SSL)
 
 @task
 def extract_text_file_task(doc_id: str, local_file_path: str, provider: str, original_filename: str):
@@ -137,9 +138,9 @@ def extract_text_file_task(doc_id: str, local_file_path: str, provider: str, ori
             text = f.read()
         data = {"doc_id": doc_id, "original_filename": original_filename, "provider": provider, "page_number": 1, "strategy": "PLAIN_TEXT", "text": text}
         save_temp_json(doc_id, 1, data)
-        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": 1, "status": "SUCCESS", "strategy": "PLAIN_TEXT"})
+        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": 1, "status": "SUCCESS", "strategy": "PLAIN_TEXT"}, verify=VERIFY_SSL)
     except Exception:
-        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": 1, "status": "FAILED", "strategy": "ERROR"})
+        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": 1, "status": "FAILED", "strategy": "ERROR"}, verify=VERIFY_SSL)
 
 @flow(name="Document_Router_Flow", task_runner=ConcurrentTaskRunner())
 def ingest_document_flow(doc_id: str, raw_storage_path: str, provider: str, original_filename: str):
@@ -151,15 +152,15 @@ def ingest_document_flow(doc_id: str, raw_storage_path: str, provider: str, orig
     if ext in ['.pdf', '.png', '.jpg', '.jpeg']:
         doc = fitz.open(local_path)
         total_pages = len(doc)
-        httpx.post(f"{DJANGO_API}/catalog/{doc_id}/init/", json={"total_pages": total_pages})
+        httpx.post(f"{DJANGO_API}/catalog/{doc_id}/init/", json={"total_pages": total_pages}, verify=VERIFY_SSL)
         for p in range(total_pages):
             extract_page_task.submit(doc_id, local_path, p, provider, original_filename)
     elif ext in ['.txt', '.md']:
-        httpx.post(f"{DJANGO_API}/catalog/{doc_id}/init/", json={"total_pages": 1})
+        httpx.post(f"{DJANGO_API}/catalog/{doc_id}/init/", json={"total_pages": 1}, verify=VERIFY_SSL)
         extract_text_file_task.submit(doc_id, local_path, provider, original_filename)
     else:
-        httpx.post(f"{DJANGO_API}/catalog/{doc_id}/init/", json={"total_pages": 1})
-        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": 1, "status": "FAILED", "strategy": "UNSUPPORTED_FORMAT"})
+        httpx.post(f"{DJANGO_API}/catalog/{doc_id}/init/", json={"total_pages": 1}, verify=VERIFY_SSL)
+        httpx.post(f"{DJANGO_API}/transaction/{doc_id}/update/", json={"page_number": 1, "status": "FAILED", "strategy": "UNSUPPORTED_FORMAT"}, verify=VERIFY_SSL)
 
 @flow(name="Parquet_Aggregator_Flow")
 def aggregate_flow(doc_id: str, provider: str, original_filename: str, parquet_storage_path: str, category: str | None = None):
@@ -196,7 +197,7 @@ def aggregate_flow(doc_id: str, provider: str, original_filename: str, parquet_s
         if delete_keys:
             s3.delete_objects(Bucket=BUCKET_NAME, Delete={'Objects': delete_keys})
             
-        httpx.post(f"{DJANGO_API}/catalog/{doc_id}/complete/")
+        httpx.post(f"{DJANGO_API}/catalog/{doc_id}/complete/", verify=VERIFY_SSL)
     except Exception as e:
         raise e
 
