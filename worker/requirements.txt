@@ -4,7 +4,7 @@ pandas
 pyarrow
 boto3
 httpx
-qdrant-client
 fastapi
 uvicorn
 pydantic
+PyYAML
