@@ -4,17 +4,22 @@ import uuid
 import boto3
 import httpx
 import json
+import yaml
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from .models import KnowledgeCatalog, KnowledgeTransaction
 from botocore.exceptions import ClientError
 
+# ==========================================
+# 1. Environment & Initialization
+
 S3_ENDPOINT = os.environ.get('S3_ENDPOINT_URL', 'http://minio:9000')
 S3_ACCESS = os.environ.get('S3_ACCESS_KEY', 'admin')
 S3_SECRET = os.environ.get('S3_SECRET_KEY', 'qwer1234')
-BUCKET_NAME = os.environ.get('S3_BUCKET_NAME', 'knowledge-base')
 VERIFY_SSL = os.environ.get('VERIFY_SSL', 'True').lower() in ('true', '1', 't')
-
+with open('/app/schema.yaml', 'r', encoding='utf-8') as f:
+    SCHEMA = yaml.safe_load(f)
+BUCKET_NAME = SCHEMA['storage']['minio']['bucket_name']
 s3 = boto3.client('s3', endpoint_url=S3_ENDPOINT, aws_access_key_id=S3_ACCESS, aws_secret_access_key=S3_SECRET)
 
 def get_safe_filename(original_name: str, doc_id: uuid.UUID) -> str:
@@ -27,6 +32,9 @@ def get_safe_filename(original_name: str, doc_id: uuid.UUID) -> str:
     short_id = str(doc_id)[:8]
     return f"{safe_name}_{short_id}{ext}"
 
+# ==========================================
+# 2. API Endpoints
+
 @csrf_exempt
 def upload_document(request):
     if request.method == 'POST' and request.FILES.get('file'):
@@ -34,26 +42,21 @@ def upload_document(request):
         provider = request.POST.get('provider', 'DITP')
         category = request.POST.get('category', None)
         new_doc_id = uuid.uuid4()
-        
         safe_filename = get_safe_filename(file_obj.name, new_doc_id)
         ext = os.path.splitext(safe_filename)[1].lower()
-        
-        if ext == ".pdf":
-            folder_type = "pdf"
-        elif ext in [".txt", ".md"]:
-            folder_type = "text"
-        elif ext in [".png", ".jpg", ".jpeg"]:
-            folder_type = "image"
-        else:
-            folder_type = "others"
-            
-        raw_minio_path = f"raw/{folder_type}/{provider}/{safe_filename}"
-        
+        folder_type = "others"
+        for group, extensions in SCHEMA['storage']['minio']['file_groups'].items():
+            if ext in extensions:
+                folder_type = group
+                break
+        raw_zone_template = SCHEMA['storage']['minio']['paths']['raw_zone']
+        raw_minio_path = raw_zone_template.format(
+            file_group=folder_type, provider=provider, safe_filename=safe_filename
+        )
         try:
             s3.head_bucket(Bucket=BUCKET_NAME)
         except Exception:
             s3.create_bucket(Bucket=BUCKET_NAME)
-
         catalog = KnowledgeCatalog.objects.create(
             id=new_doc_id,
             original_filename=file_obj.name,
@@ -76,8 +79,8 @@ def upload_document(request):
         
         try:
             httpx.post('http://worker:8002/webhook/ingest', json=payload, timeout=5, verify=VERIFY_SSL)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️ Trigger ingest worker failed: {e}")
             
         return JsonResponse({"status": "success", "doc_id": str(catalog.id), "saved_as": safe_filename})
     return JsonResponse({"error": "Invalid request"}, status=400)
@@ -109,8 +112,8 @@ def update_transaction(request, doc_id):
         failed_count = KnowledgeTransaction.objects.filter(catalog=catalog, status='FAILED').count()
         
         if (success_count + failed_count) == catalog.total_pages and catalog.total_pages > 0 and catalog.status != 'AGGREGATING':
-            filename_no_ext = os.path.splitext(catalog.safe_filename)[0]
-            parquet_minio_path = f"extracted/{catalog.provider}/{filename_no_ext}/extracted_content.parquet"
+            extracted_zone_template = SCHEMA['storage']['minio']['paths']['extracted_zone']
+            parquet_minio_path = extracted_zone_template.format(provider=catalog.provider, doc_id=str(catalog.id))
             
             catalog.status = 'AGGREGATING'
             catalog.parquet_storage_path = parquet_minio_path
@@ -120,15 +123,14 @@ def update_transaction(request, doc_id):
                 "doc_id": str(catalog.id), 
                 "provider": catalog.provider, 
                 "original_filename": catalog.original_filename,
-                "parquet_storage_path": parquet_minio_path
+                "category": catalog.category 
             }
             try:
-                httpx.post('http://worker:8002/webhook/aggregate', json=payload, timeout=5, verify=VERIFY_SSL)
-            except Exception:
-                pass
+                httpx.post('http://worker:8002/webhook/aggregate', json=payload, timeout=10, verify=VERIFY_SSL)
+            except Exception as e:
+                print(f"⚠️ Trigger aggregate worker failed: {e}")
 
         return JsonResponse({"status": "updated"})
-
 @csrf_exempt
 def complete_catalog(request, doc_id):
     if request.method == 'POST':
