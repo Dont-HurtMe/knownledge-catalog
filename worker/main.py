@@ -11,6 +11,10 @@ class IngestPayload(BaseModel):
     original_filename: str
     user_id: str
     auto_vlm: bool = False
+    s3_endpoint: str
+    s3_access_key: str
+    s3_secret_key: str
+    s3_bucket_name: str
 
 class ResumePayload(BaseModel):
     doc_id: str
@@ -28,7 +32,6 @@ async def ingest_webhook(payload: IngestPayload):
         )
         return {"status": "queued"}
     except Exception as e:
-        print(f"PREFECT INGEST ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/webhook/resume_vlm")
@@ -41,5 +44,4 @@ async def resume_webhook(payload: ResumePayload):
         )
         return {"status": "queued"}
     except Exception as e:
-        print(f"PREFECT RESUME ERROR: {e}")
         raise HTTPException(status_code=500, detail=str(e))

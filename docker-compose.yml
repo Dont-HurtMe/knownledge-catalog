@@ -54,8 +54,3 @@ services:
       - ./schema.yaml:/app/schema.yaml
     ports:
       - "8002:8002"
-    depends_on:
-      - prefect
-      - minio
-      - backend
-      - vlm

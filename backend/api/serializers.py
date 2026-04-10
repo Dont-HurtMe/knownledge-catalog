@@ -7,20 +7,24 @@ class KnowledgeCatalogSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class UploadDocumentSerializer(serializers.Serializer):
-    file = serializers.FileField(required=True)
-    provider = serializers.CharField(max_length=200, default='DITP')
-    category = serializers.CharField(max_length=200, required=False, allow_null=True, allow_blank=True)
+    provider = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    category = serializers.CharField(max_length=100, required=False, allow_blank=True)
     auto_vlm = serializers.BooleanField(default=False)
+    
+    s3_endpoint = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    s3_access_key = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    s3_secret_key = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    s3_bucket_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
 class PartialReadySerializer(serializers.Serializer):
     normal_pages = serializers.IntegerField(default=0)
-    parquet_storage_path = serializers.CharField(required=False, allow_null=True, allow_blank=True) 
+    parquet_storage_path = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
 class PauseVlmSerializer(serializers.Serializer):
     pending_vlm_pages = serializers.IntegerField(required=True)
     normal_pages = serializers.IntegerField(default=0)
     parquet_storage_path = serializers.CharField(required=False, allow_null=True, allow_blank=True)
-    
+
 class CompleteCatalogSerializer(serializers.Serializer):
     total_pages = serializers.IntegerField(default=0)
     normal_pages = serializers.IntegerField(default=0)
@@ -28,4 +32,4 @@ class CompleteCatalogSerializer(serializers.Serializer):
     parquet_storage_path = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
 class FailCatalogSerializer(serializers.Serializer):
-    error_message = serializers.CharField(default='Unknown error occurred')
+    error_message = serializers.CharField()

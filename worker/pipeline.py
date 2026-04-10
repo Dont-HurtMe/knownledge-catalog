@@ -7,15 +7,10 @@ import fitz
 import pandas as pd
 from io import BytesIO
 from prefect import flow, task, serve
+from botocore.client import Config
 
 DJANGO_API = os.environ.get("DJANGO_API_URL", "http://backend:8001/api/catalog")
-S3_ENDPOINT = os.environ.get("S3_ENDPOINT_URL", "http://minio:9000")
-S3_ACCESS = os.environ.get("S3_ACCESS_KEY", "admin")
-S3_SECRET = os.environ.get("S3_SECRET_KEY", "qwer1234")
-BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "knowledge-base")
 VLM_API_URL = os.environ.get("VLM_API_URL", "http://vlm:8003/extract")
-
-s3 = boto3.client("s3", endpoint_url=S3_ENDPOINT, aws_access_key_id=S3_ACCESS, aws_secret_access_key=S3_SECRET)
 
 class PDFValidationError(Exception): pass
 class LowTextDensityError(PDFValidationError): pass
@@ -69,9 +64,18 @@ class PDFValidator:
         cls.check_broken_font(text)
         cls.check_broken_thai(text)
 
+def get_s3_client(creds: dict):
+    return boto3.client('s3',
+        endpoint_url=creds['s3_endpoint'],
+        aws_access_key_id=creds['s3_access_key'],
+        aws_secret_access_key=creds['s3_secret_key'],
+        config=Config(signature_version='s3v4')
+    )
+
 @task
-def download_file(raw_storage_path: str) -> bytes:
-    obj = s3.get_object(Bucket=BUCKET_NAME, Key=raw_storage_path)
+def download_file(raw_storage_path: str, creds: dict) -> bytes:
+    s3 = get_s3_client(creds)
+    obj = s3.get_object(Bucket=creds['s3_bucket_name'], Key=raw_storage_path)
     return obj["Body"].read()
 
 @task
@@ -105,7 +109,7 @@ def extract_and_split(file_bytes: bytes, filename: str):
             return [], [], 0
 
 @task
-def save_parquet(data: list, doc_id: str, part_name: str) -> str:
+def save_parquet(data: list, doc_id: str, part_name: str, creds: dict) -> str:
     if not data: return ""
     df = pd.DataFrame(data)
     folder_path = f"processed/{doc_id}"
@@ -113,7 +117,9 @@ def save_parquet(data: list, doc_id: str, part_name: str) -> str:
     parquet_buffer = BytesIO()
     df.to_parquet(parquet_buffer, index=False)
     parquet_buffer.seek(0)
-    s3.upload_fileobj(parquet_buffer, BUCKET_NAME, file_path)
+    
+    s3 = get_s3_client(creds)
+    s3.upload_fileobj(parquet_buffer, creds['s3_bucket_name'], file_path)
     return folder_path
 
 @task
@@ -170,10 +176,17 @@ def ingest_flow(payload: dict):
     auto_vlm = payload.get("auto_vlm", False)
     original_filename = payload.get("original_filename", "doc.pdf")
     
-    file_bytes = download_file(raw_storage_path)
+    creds = {
+        "s3_endpoint": payload["s3_endpoint"],
+        "s3_access_key": payload["s3_access_key"],
+        "s3_secret_key": payload["s3_secret_key"],
+        "s3_bucket_name": payload["s3_bucket_name"]
+    }
+    
+    file_bytes = download_file(raw_storage_path, creds)
     text_data, vlm_pages, total_pages = extract_and_split(file_bytes, original_filename)
     
-    folder_path = save_parquet(text_data, doc_id, "part_1_text")
+    folder_path = save_parquet(text_data, doc_id, "part_1_text", creds)
     pending_vlm_count = len(vlm_pages)
     
     if pending_vlm_count == 0:
@@ -195,7 +208,7 @@ def ingest_flow(payload: dict):
 
     vlm_data = process_vlm_extraction(file_bytes, vlm_pages, original_filename)
     if vlm_data:
-        save_parquet(vlm_data, doc_id, "part_2_vlm")
+        save_parquet(vlm_data, doc_id, "part_2_vlm", creds)
         
     notify_django(doc_id, "complete", {
         "total_pages": total_pages,
@@ -207,20 +220,32 @@ def ingest_flow(payload: dict):
 @flow(name="process-vlm")
 def resume_vlm_flow(payload: dict):
     doc_id = payload["doc_id"]
-    raw_storage_path = payload["raw_storage_path"]
-    original_filename = payload.get("original_filename", "doc.pdf")
     
-    file_bytes = download_file(raw_storage_path)
+    resp = httpx.get(f"{DJANGO_API}/{doc_id}/", timeout=20)
+    if resp.status_code != 200: return
     
+    cat = resp.json()
+    
+    creds = {
+        "s3_endpoint": cat.get("s3_endpoint") or os.environ.get("S3_ENDPOINT_URL"),
+        "s3_access_key": cat.get("s3_access_key") or os.environ.get("S3_ACCESS_KEY"),
+        "s3_secret_key": cat.get("s3_secret_key") or os.environ.get("S3_SECRET_KEY"),
+        "s3_bucket_name": cat.get("s3_bucket_name") or os.environ.get("S3_BUCKET_NAME", "knowledge-base")
+    }
+    
+    raw_storage_path = cat["raw_storage_path"]
+    original_filename = cat.get("original_filename", "doc.pdf")
+    
+    file_bytes = download_file(raw_storage_path, creds)
     _, vlm_pages, total_pages = extract_and_split(file_bytes, original_filename)
     
     vlm_data = process_vlm_extraction(file_bytes, vlm_pages, original_filename)
     if vlm_data:
-        save_parquet(vlm_data, doc_id, "part_2_vlm")
+        save_parquet(vlm_data, doc_id, "part_2_vlm", creds)
         
     notify_django(doc_id, "complete", {
         "total_pages": total_pages,
-        "normal_pages": 0,
+        "normal_pages": cat.get("normal_pages", 0),
         "vlm_pages": len(vlm_pages),
         "parquet_storage_path": f"processed/{doc_id}"
     })

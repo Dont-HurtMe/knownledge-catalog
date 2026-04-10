@@ -1,13 +1,20 @@
-version: "1.0"
-project: "knowledge_base_core"
 storage:
   minio:
     bucket_name: "knowledge-base"
     paths:
       raw_zone: "raw/{file_group}/{provider}/{safe_filename}"
-      temp_zone: "temp/{doc_id}/page_{page_number}.json"
-      extracted_zone: "extracted/{provider}/{doc_id}/extracted_content.parquet"
+      processed_zone: "processed/{doc_id}"
     file_groups:
-      pdf: [".pdf"]
-      text: [".txt", ".md"]
-      image: [".png", ".jpg", ".jpeg"]
+      documents:
+        - ".pdf"
+        - ".doc"
+        - ".docx"
+      images:
+        - ".png"
+        - ".jpg"
+        - ".jpeg"
+      texts:
+        - ".txt"
+        - ".csv"
+      others:
+        - "*"
