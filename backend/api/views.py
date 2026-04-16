@@ -25,8 +25,16 @@ from .serializers import (
 
 VERIFY_SSL = os.environ.get('VERIFY_SSL', 'True').lower() in ('true', '1', 't')
 
-with open('/app/schema.yaml', 'r', encoding='utf-8') as f:
-    SCHEMA = yaml.safe_load(f)
+def load_schema_with_env(filepath):
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()        
+    def env_replacer(match):
+        var_name = match.group(1)
+        return os.environ.get(var_name, "knowledge-base")
+    expanded_content = re.sub(r'\$\{([^}]+)\}', env_replacer, content)
+    return yaml.safe_load(expanded_content)
+
+SCHEMA = load_schema_with_env('/app/schema.yaml')
 
 def get_safe_filename(original_name: str, doc_id: uuid.UUID) -> str:
     name, ext = os.path.splitext(original_name)
@@ -49,11 +57,16 @@ def get_storage_client(endpoint, access, secret):
 class KnowledgeCatalogViewSet(viewsets.ModelViewSet):
     serializer_class = KnowledgeCatalogSerializer
     parser_classes = [JSONParser, MultiPartParser, FormParser]
+    
+    def get_permissions(self):
+        if self.action in ['retrieve', 'partial_ready', 'pause_for_approval', 'complete', 'fail']:
+            return [AllowAny()]
+        return super().get_permissions()
 
     def get_queryset(self):
         queryset = KnowledgeCatalog.objects.all().order_by('-created_at')
-        if self.action in ['complete', 'fail', 'partial_ready', 'pause_for_approval']:
-            return queryset
+        if self.action in ['retrieve', 'complete', 'fail', 'partial_ready', 'pause_for_approval']:
+            return queryset        
         user = self.request.user
         if not user or not user.is_authenticated:
             return queryset.none()

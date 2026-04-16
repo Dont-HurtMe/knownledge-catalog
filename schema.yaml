@@ -1,6 +1,6 @@
 storage:
   minio:
-    bucket_name: "knowledge-base"
+    bucket_name: ${S3_BUCKET_NAME}
     paths:
       raw_zone: "raw/{file_group}/{provider}/{safe_filename}"
       processed_zone: "processed/{doc_id}"

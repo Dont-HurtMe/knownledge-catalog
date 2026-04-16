@@ -158,11 +158,9 @@ def process_vlm_extraction(file_bytes: bytes, vlm_pages: list, filename: str) ->
             pix = page.get_pixmap(dpi=150)
             img_bytes = pix.tobytes("jpeg")
             img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-            
             resp = httpx.post(VLM_API_URL, json={"image_base64": img_base64}, timeout=120.0)
             resp.raise_for_status()
             extracted_text = resp.json().get("text", "")
-            
             data.append({"page_number": p, "text": extracted_text.strip()})
         except Exception as e:
             data.append({"page_number": p, "text": f"[Error connecting to VLM on page {p}: {e}]"})
@@ -220,12 +218,11 @@ def ingest_flow(payload: dict):
 @flow(name="process-vlm")
 def resume_vlm_flow(payload: dict):
     doc_id = payload["doc_id"]
-    
     resp = httpx.get(f"{DJANGO_API}/{doc_id}/", timeout=20)
-    if resp.status_code != 200: return
-    
+    if resp.status_code != 200: 
+        print(f"❌ Worker Error: Could not fetch data from Django. Status: {resp.status_code}, Response: {resp.text}")
+        return
     cat = resp.json()
-    
     creds = {
         "s3_endpoint": cat.get("s3_endpoint") or os.environ.get("S3_ENDPOINT_URL"),
         "s3_access_key": cat.get("s3_access_key") or os.environ.get("S3_ACCESS_KEY"),

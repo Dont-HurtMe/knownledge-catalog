@@ -1,6 +1,11 @@
+import os
 import uuid
+import boto3
+from botocore.client import Config
 from django.db import models
 from django.contrib.auth.models import User
+from django.db.models.signals import pre_delete
+from django.dispatch import receiver
 
 class KnowledgeCatalog(models.Model):
     STATUS_CHOICES = [
@@ -11,7 +16,6 @@ class KnowledgeCatalog(models.Model):
         ('COMPLETED', 'Completed'),
         ('FAILED', 'Failed'),
     ]
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     original_filename = models.CharField(max_length=255)
     safe_filename = models.CharField(max_length=255)
@@ -42,3 +46,33 @@ class KnowledgeCatalog(models.Model):
 
     def __str__(self):
         return self.original_filename
+
+@receiver(pre_delete, sender=KnowledgeCatalog)
+def delete_s3_files_on_model_delete(sender, instance, **kwargs):
+    s3_ep = instance.s3_endpoint or os.environ.get('S3_ENDPOINT_URL')
+    s3_ak = instance.s3_access_key or os.environ.get('S3_ACCESS_KEY')
+    s3_sk = instance.s3_secret_key or os.environ.get('S3_SECRET_KEY')
+    s3_bn = instance.s3_bucket_name or os.environ.get('S3_BUCKET_NAME', 'knowledge-base')
+    if not (s3_ep and s3_ak and s3_sk):
+        print(f"⏭️ Skip deleting files for {instance.id}: No S3 credentials found.")
+        return
+    try:
+        s3 = boto3.client('s3',
+            endpoint_url=s3_ep,
+            aws_access_key_id=s3_ak,
+            aws_secret_access_key=s3_sk,
+            config=Config(signature_version='s3v4')
+        )
+        if instance.raw_storage_path:
+            s3.delete_object(Bucket=s3_bn, Key=instance.raw_storage_path)
+            print(f"🗑️ Deleted Raw File: {instance.raw_storage_path}")
+        if instance.parquet_storage_path:
+            prefix = f"{instance.parquet_storage_path}/" if not instance.parquet_storage_path.endswith('/') else instance.parquet_storage_path
+            response = s3.list_objects_v2(Bucket=s3_bn, Prefix=prefix)
+            if 'Contents' in response:
+                delete_keys = [{'Key': obj['Key']} for obj in response['Contents']]
+                s3.delete_objects(Bucket=s3_bn, Delete={'Objects': delete_keys})
+                print(f"🗑️ Deleted {len(delete_keys)} Processed Files from: {prefix}")
+
+    except Exception as e:
+        print(f"⚠️ S3 Deletion Warning: Could not delete files for {instance.id}. Error: {e}")

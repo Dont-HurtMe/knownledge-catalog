@@ -8,8 +8,15 @@ def load_schema(schema_path="schema.yaml"):
     if not os.path.exists(schema_path):
         print(f"❌ Error: Schema file not found at {schema_path}")
         return None
+
     with open(schema_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        content = f.read()
+    def env_replacer(match):
+        var_name = match.group(1)
+        return os.environ.get(var_name, "knowledge-base")
+        
+    expanded_content = re.sub(r'\$\{([^}]+)\}', env_replacer, content)
+    return yaml.safe_load(expanded_content)
 
 def init_minio(schema):
     storage_cfg = schema.get('storage', {}).get('minio', {})
