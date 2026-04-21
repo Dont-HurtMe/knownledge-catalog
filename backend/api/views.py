@@ -5,34 +5,43 @@ import boto3
 import httpx
 import yaml
 from django.utils import timezone
+from django.db.models import Q
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import AllowAny
+from rest_framework.pagination import PageNumberPagination
 from botocore.exceptions import ClientError
 from botocore.client import Config
 
-from .models import KnowledgeCatalog
+from .models import KnowledgeCatalog, Department, Folder
 from .serializers import (
     KnowledgeCatalogSerializer, 
     UploadDocumentSerializer, 
     CompleteCatalogSerializer, 
     FailCatalogSerializer,
     PartialReadySerializer,
-    PauseVlmSerializer
+    PauseVlmSerializer,
+    DepartmentSerializer,
+    FolderSerializer,
+    FileRenameSerializer,
+    FileMoveSerializer
 )
 
 VERIFY_SSL = os.environ.get('VERIFY_SSL', 'True').lower() in ('true', '1', 't')
 
 def load_schema_with_env(filepath):
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()        
-    def env_replacer(match):
-        var_name = match.group(1)
-        return os.environ.get(var_name, "knowledge-base")
-    expanded_content = re.sub(r'\$\{([^}]+)\}', env_replacer, content)
-    return yaml.safe_load(expanded_content)
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()        
+        def env_replacer(match):
+            var_name = match.group(1)
+            return os.environ.get(var_name, "knowledge-base")
+        expanded_content = re.sub(r'\$\{([^}]+)\}', env_replacer, content)
+        return yaml.safe_load(expanded_content)
+    except Exception:
+        return {}
 
 SCHEMA = load_schema_with_env('/app/schema.yaml')
 
@@ -54,25 +63,46 @@ def get_storage_client(endpoint, access, secret):
         config=Config(signature_version='s3v4')
     )
 
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+class DepartmentViewSet(viewsets.ModelViewSet):
+    queryset = Department.objects.all().order_by('-created_at')
+    serializer_class = DepartmentSerializer
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+class FolderViewSet(viewsets.ModelViewSet):
+    queryset = Folder.objects.all().order_by('-created_at')
+    serializer_class = FolderSerializer
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+class ReportViewSet(viewsets.ViewSet):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    
+    def list(self, request):
+        return Response({"status": "success", "data": []})
+
+    def create(self, request):
+        return Response({"status": "success", "message": "Report generated"})
+
 class KnowledgeCatalogViewSet(viewsets.ModelViewSet):
+    queryset = KnowledgeCatalog.objects.all().order_by('-created_at')
     serializer_class = KnowledgeCatalogSerializer
     parser_classes = [JSONParser, MultiPartParser, FormParser]
+    pagination_class = StandardResultsSetPagination
+    authentication_classes = []
+    permission_classes = [AllowAny]
     
     def get_permissions(self):
-        if self.action in ['retrieve', 'partial_ready', 'pause_for_approval', 'complete', 'fail']:
-            return [AllowAny()]
-        return super().get_permissions()
+        return [AllowAny()]
 
     def get_queryset(self):
-        queryset = KnowledgeCatalog.objects.all().order_by('-created_at')
-        if self.action in ['retrieve', 'complete', 'fail', 'partial_ready', 'pause_for_approval']:
-            return queryset        
-        user = self.request.user
-        if not user or not user.is_authenticated:
-            return queryset.none()
-        if user.is_staff or user.is_superuser:
-            return queryset
-        return queryset.filter(user=user)
+        return KnowledgeCatalog.objects.all().order_by('-created_at')
 
     def create(self, request, *args, **kwargs):
         serializer = UploadDocumentSerializer(data=request.data)
@@ -83,82 +113,63 @@ class KnowledgeCatalogViewSet(viewsets.ModelViewSet):
         if not file_obj:
             return Response({"error": "No file provided"}, status=status.HTTP_400_BAD_REQUEST)
 
-        provider = serializer.validated_data.get('provider')
-        category = serializer.validated_data.get('category')
+        provider_name = serializer.validated_data.get('provider', 'unknown')
         auto_vlm = serializer.validated_data.get('auto_vlm', False)
+        dept_obj, _ = Department.objects.get_or_create(name=provider_name)
         
-        req_endpoint = serializer.validated_data.get('s3_endpoint')
-        req_access = serializer.validated_data.get('s3_access_key')
-        req_secret = serializer.validated_data.get('s3_secret_key')
-        req_bucket = serializer.validated_data.get('s3_bucket_name')
-
-        is_byos = bool(req_endpoint and req_access and req_secret and req_bucket)
-
-        if is_byos:
-            s3_endpoint = req_endpoint
-            s3_access = req_access
-            s3_secret = req_secret
-            s3_bucket = req_bucket
-        else:
-            s3_endpoint = os.environ.get('S3_ENDPOINT_URL')
-            s3_access = os.environ.get('S3_ACCESS_KEY')
-            s3_secret = os.environ.get('S3_SECRET_KEY')
-            s3_bucket = SCHEMA.get('storage', {}).get('minio', {}).get('bucket_name', 'knowledge-base')
-
-        if not s3_endpoint:
-            return Response({"error": "Storage configuration missing. Provide BYOS credentials."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        real_user = request.user 
+        folder_id = request.data.get('folder_id')
+        folder_obj = Folder.objects.filter(id=folder_id).first() if folder_id else None
+            
         new_doc_id = uuid.uuid4()
         safe_filename = get_safe_filename(file_obj.name, new_doc_id)
         ext = os.path.splitext(safe_filename)[1].lower()
         
-        folder_type = "others"
+        file_group = "others"
         for group, extensions in SCHEMA.get('storage', {}).get('minio', {}).get('file_groups', {}).items():
             if ext in extensions:
-                folder_type = group
+                file_group = group
                 break
                 
-        raw_zone_template = SCHEMA.get('storage', {}).get('minio', {}).get('paths', {}).get('raw_zone', 'raw/{file_group}/{provider}/{safe_filename}')
-        raw_minio_path = raw_zone_template.format(
-            file_group=folder_type, provider=provider or 'unknown', safe_filename=safe_filename
-        )
+        raw_path = f"raw/{file_group}/{provider_name}/{safe_filename}"
+        s3_endpoint = os.environ.get('S3_ENDPOINT_URL')
+        s3_access = os.environ.get('S3_ACCESS_KEY')
+        s3_secret = os.environ.get('S3_SECRET_KEY')
+        s3_bucket = os.environ.get('S3_BUCKET_NAME', 'knowledge-base')
         
         s3 = get_storage_client(s3_endpoint, s3_access, s3_secret)
         
         try:
             s3.head_bucket(Bucket=s3_bucket)
-        except Exception:
+        except ClientError:
             try:
                 s3.create_bucket(Bucket=s3_bucket)
             except ClientError as e:
-                return Response({"error": f"Storage Error: Could not access or create bucket '{s3_bucket}'. {e}"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": f"Storage Error: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+        s3.upload_fileobj(file_obj, s3_bucket, raw_path)
+        
+        real_user = request.user if request.user and request.user.is_authenticated else None
+        
         catalog = KnowledgeCatalog.objects.create(
             id=new_doc_id,
             original_filename=file_obj.name,
             safe_filename=safe_filename,
-            raw_storage_path=raw_minio_path,
             file_type=ext[1:].upper() if ext else 'UNKNOWN',
-            provider=provider,
-            category=category,
-            auto_vlm=auto_vlm,
-            user=real_user, 
+            provider=provider_name,      
+            department=dept_obj,         
+            folder=folder_obj,           
+            raw_storage_path=raw_path,
             status='PROCESSING',
-            s3_endpoint=s3_endpoint if is_byos else None,
-            s3_access_key=s3_access if is_byos else None,
-            s3_secret_key=s3_secret if is_byos else None,
-            s3_bucket_name=s3_bucket if is_byos else None
+            auto_vlm=auto_vlm,
+            user=real_user
         )
         
-        s3.upload_fileobj(file_obj, s3_bucket, raw_minio_path)
-
         payload = {
             "doc_id": str(catalog.id), 
-            "raw_storage_path": raw_minio_path, 
-            "provider": provider or "", 
-            "original_filename": file_obj.name,
-            "user_id": str(real_user.id),
+            "raw_storage_path": raw_path, 
+            "provider": provider_name, 
+            "original_filename": file_obj.name,                 
+            "user_id": str(real_user.id) if real_user else "0", 
             "auto_vlm": auto_vlm,
             "s3_endpoint": s3_endpoint,
             "s3_access_key": s3_access,
@@ -168,9 +179,9 @@ class KnowledgeCatalogViewSet(viewsets.ModelViewSet):
         
         try:
             r = httpx.post('http://worker:8002/webhook/ingest', json=payload, timeout=5, verify=VERIFY_SSL)
-            r.raise_for_status()
+            r.raise_for_status() 
         except Exception as e:
-            print(f"🚨 FASTAPI WORKER ERROR: {e}")
+            print(f"FASTAPI WORKER ERROR: {e}")
             
         return Response({"status": "success", "doc_id": str(catalog.id), "saved_as": safe_filename}, status=status.HTTP_201_CREATED)
 
@@ -181,21 +192,76 @@ class KnowledgeCatalogViewSet(viewsets.ModelViewSet):
         download_url = None
         
         if instance.raw_storage_path:
-            s3_ep = instance.s3_endpoint or os.environ.get('S3_ENDPOINT_URL')
-            s3_ak = instance.s3_access_key or os.environ.get('S3_ACCESS_KEY')
-            s3_sk = instance.s3_secret_key or os.environ.get('S3_SECRET_KEY')
-            s3_bn = instance.s3_bucket_name or SCHEMA.get('storage', {}).get('minio', {}).get('bucket_name', 'knowledge-base')
+            s3_ep = getattr(instance, 's3_endpoint', None) or os.environ.get('S3_ENDPOINT_URL')
+            s3_ak = getattr(instance, 's3_access_key', None) or os.environ.get('S3_ACCESS_KEY')
+            s3_sk = getattr(instance, 's3_secret_key', None) or os.environ.get('S3_SECRET_KEY')
+            s3_bn = getattr(instance, 's3_bucket_name', None) or SCHEMA.get('storage', {}).get('minio', {}).get('bucket_name', 'knowledge-base')
             
             if s3_ep and s3_ak:
-                s3 = get_storage_client(s3_ep, s3_ak, s3_sk)
+                external_ep = s3_ep.replace("minio:9000", "localhost:9000") if "minio:9000" in s3_ep else s3_ep
+                s3_external = get_storage_client(external_ep, s3_ak, s3_sk)
                 try:
-                    download_url = s3.generate_presigned_url(
+                    download_url = s3_external.generate_presigned_url(
                         'get_object',
-                        Params={'Bucket': s3_bn, 'Key': instance.raw_storage_path},
+                        Params={
+                            'Bucket': s3_bn, 
+                            'Key': instance.raw_storage_path,
+                            'ResponseContentType': 'application/pdf',
+                            'ResponseContentDisposition': 'inline'
+                        },
                         ExpiresIn=3600
                     )
+                    if download_url and "minio:9000" in download_url:
+                        download_url = download_url.replace("minio:9000", "localhost:9000")
                 except Exception:
                     pass
+        data['download_url'] = download_url
+        return Response(data)
+
+    @action(detail=False, methods=['get'], permission_classes=[AllowAny])
+    def cite(self, request):
+        file_name = request.query_params.get('file_name')
+        if not file_name:
+            return Response({"error": "Missing file_name parameter"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        doc = KnowledgeCatalog.objects.filter(
+            Q(safe_filename=file_name) | Q(original_filename=file_name)
+        ).first()
+        
+        if not doc:
+            return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+        serializer = self.get_serializer(doc)
+        data = serializer.data
+        download_url = None
+        
+        raw_storage_path = getattr(doc, 'raw_storage_path', None)
+        
+        if raw_storage_path:
+            s3_ep = getattr(doc, 's3_endpoint', None) or os.environ.get('S3_ENDPOINT_URL')
+            s3_ak = getattr(doc, 's3_access_key', None) or os.environ.get('S3_ACCESS_KEY')
+            s3_sk = getattr(doc, 's3_secret_key', None) or os.environ.get('S3_SECRET_KEY')
+            s3_bn = getattr(doc, 's3_bucket_name', None) or SCHEMA.get('storage', {}).get('minio', {}).get('bucket_name', 'knowledge-base')
+            
+            if s3_ep and s3_ak:
+                external_ep = s3_ep.replace("minio:9000", "localhost:9000") if "minio:9000" in s3_ep else s3_ep
+                s3_external = get_storage_client(external_ep, s3_ak, s3_sk)
+                try:
+                    download_url = s3_external.generate_presigned_url(
+                        'get_object',
+                        Params={
+                            'Bucket': s3_bn, 
+                            'Key': raw_storage_path,
+                            'ResponseContentType': 'application/pdf',          
+                            'ResponseContentDisposition': 'inline'
+                        },
+                        ExpiresIn=3600
+                    )
+                    if download_url and "minio:9000" in download_url:
+                        download_url = download_url.replace("minio:9000", "localhost:9000")
+                except Exception:
+                    pass
+                    
         data['download_url'] = download_url
         return Response(data)
 
@@ -251,4 +317,32 @@ class KnowledgeCatalogViewSet(viewsets.ModelViewSet):
             instance.completed_at = timezone.now()
             instance.save()
             return Response({"status": "failed_recorded"})
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['patch'])
+    def rename(self, request, pk=None):
+        file_obj = self.get_object()
+        serializer = FileRenameSerializer(data=request.data)
+        if serializer.is_valid():
+            file_obj.original_filename = serializer.validated_data['new_name']
+            file_obj.save()
+            return Response({"status": "renamed", "new_name": file_obj.original_filename})
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'])
+    def move(self, request):
+        serializer = FileMoveSerializer(data=request.data)
+        if serializer.is_valid():
+            file_ids = serializer.validated_data['file_ids']
+            target_folder_id = serializer.validated_data.get('target_folder_id')
+            
+            target_folder = None
+            if target_folder_id:
+                try:
+                    target_folder = Folder.objects.get(id=target_folder_id)
+                except Folder.DoesNotExist:
+                    return Response({"error": "Target folder not found"}, status=status.HTTP_404_NOT_FOUND)
+
+            KnowledgeCatalog.objects.filter(id__in=file_ids).update(folder=target_folder)
+            return Response({"status": "moved", "count": len(file_ids), "target_folder_id": target_folder_id})
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
