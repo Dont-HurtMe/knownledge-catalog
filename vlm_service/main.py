@@ -1,20 +1,22 @@
 import os
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 from openai import OpenAI
+from dotenv import load_dotenv
 
+load_dotenv()
 app = FastAPI(title="VLM Plug & Play Service")
-
-VERIFY_SSL = os.environ.get('VERIFY_SSL', 'True').lower() in ('true', '1', 't')
-http_client = httpx.Client(verify=VERIFY_SSL)
+VERIFY_SSL = os.environ.get('VERIFY_SSL', 'False').lower() in ('true', '1', 't')
+http_client = httpx.Client(verify=VERIFY_SSL, timeout=120.0)
 
 client = OpenAI(
-    base_url=os.getenv("VLM_API_BASE", "https://api.openai.com/v1"),
-    api_key=os.getenv("VLM_API_KEY", "dummy-key"),
-    http_client=http_client
+    base_url=os.getenv("VLM_API_BASE"),
+    api_key=os.getenv("VLM_API_KEY"),
+    http_client=http_client,
+    timeout=120.0 
 )
-MODEL_NAME = os.getenv("VLM_MODEL", "gpt-4o-mini")
+MODEL_NAME = os.getenv("VLM_MODEL")
 
 class VLMRequest(BaseModel):
     image_base64: str
@@ -27,9 +29,6 @@ class VLMRequest(BaseModel):
 
 @app.post("/extract")
 def extract_text(req: VLMRequest):
-    if not os.getenv("VLM_API_KEY") or os.getenv("VLM_API_KEY") == "your-openai-api-key-here":
-        return {"text": ""}
-
     try:
         response = client.chat.completions.create(
             model=MODEL_NAME,
@@ -51,6 +50,6 @@ def extract_text(req: VLMRequest):
                 }
             }
         )
-        return {"text": response.choices[0].message.content}
+        return {"status": "success", "text": response.choices[0].message.content}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "text": None, "detail": str(e)}

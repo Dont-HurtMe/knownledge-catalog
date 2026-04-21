@@ -8,8 +8,8 @@ class IngestPayload(BaseModel):
     doc_id: str
     raw_storage_path: str
     provider: str
-    original_filename: str
-    user_id: str
+    original_filename: str 
+    user_id: str           
     auto_vlm: bool = False
     s3_endpoint: str
     s3_access_key: str

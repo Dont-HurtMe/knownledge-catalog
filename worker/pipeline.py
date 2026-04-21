@@ -126,6 +126,8 @@ def save_parquet(data: list, doc_id: str, part_name: str, creds: dict) -> str:
 def notify_django(doc_id: str, action: str, payload: dict):
     url = f"{DJANGO_API}/{doc_id}/{action}/"
     resp = httpx.post(url, json=payload, timeout=20)
+    if resp.status_code >= 400:
+        print(f"❌ Django Validation Error [{resp.status_code}]: {resp.text}")
     resp.raise_for_status()
 
 @task
@@ -141,8 +143,18 @@ def process_vlm_extraction(file_bytes: bytes, vlm_pages: list, filename: str) ->
             img_base64 = base64.b64encode(file_bytes).decode('utf-8')
             resp = httpx.post(VLM_API_URL, json={"image_base64": img_base64}, timeout=120.0) 
             resp.raise_for_status()
-            extracted_text = resp.json().get("text", "")
-            data.append({"page_number": 1, "text": extracted_text.strip()})
+            
+            resp_data = resp.json()
+            extracted_text = resp_data.get("text")
+            
+            # --- ดักจับกรณี VLM รีเทิร์น text เป็น None ---
+            if extracted_text is not None:
+                final_text = extracted_text.strip()
+            else:
+                detail = resp_data.get("detail", "Unknown VLM Error")
+                final_text = f"[VLM Error: {detail}]"
+                
+            data.append({"page_number": 1, "text": final_text})
         except Exception as e:
             data.append({"page_number": 1, "text": f"[Error connecting to VLM: {e}]"})
         return data
@@ -160,8 +172,18 @@ def process_vlm_extraction(file_bytes: bytes, vlm_pages: list, filename: str) ->
             img_base64 = base64.b64encode(img_bytes).decode('utf-8')
             resp = httpx.post(VLM_API_URL, json={"image_base64": img_base64}, timeout=120.0)
             resp.raise_for_status()
-            extracted_text = resp.json().get("text", "")
-            data.append({"page_number": p, "text": extracted_text.strip()})
+            
+            resp_data = resp.json()
+            extracted_text = resp_data.get("text")
+            
+            # --- ดักจับกรณี VLM รีเทิร์น text เป็น None สำหรับไฟล์ PDF ---
+            if extracted_text is not None:
+                final_text = extracted_text.strip()
+            else:
+                detail = resp_data.get("detail", "Unknown VLM Error")
+                final_text = f"[VLM Error on page {p}: {detail}]"
+                
+            data.append({"page_number": p, "text": final_text})
         except Exception as e:
             data.append({"page_number": p, "text": f"[Error connecting to VLM on page {p}: {e}]"})
             

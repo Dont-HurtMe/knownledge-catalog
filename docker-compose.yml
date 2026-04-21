@@ -1,5 +1,8 @@
-version: '3.8'
-
+networks:
+  default:
+    name: share_network
+    external: true
+    
 services:
   postgres:
     image: postgres:15-alpine
@@ -55,8 +58,3 @@ services:
       - ./schema.yaml:/app/schema.yaml
     ports:
       - "8002:8002"
-
-networks:
-  default:
-    name: share_network
-    external: true
