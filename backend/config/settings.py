@@ -1,11 +1,13 @@
 from pathlib import Path
 from datetime import timedelta
 import os
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'django-insecure-dev-key')
 SHARED_JWT_SECRET = os.environ.get('SHARED_JWT_SECRET', 'my-super-secret-key-for-microservice')
 DEBUG = True
 ALLOWED_HOSTS = ['*']
+
 INSTALLED_APPS = [
     "unfold",  
     "unfold.contrib.filters",  
@@ -18,7 +20,9 @@ INSTALLED_APPS = [
     'drf_spectacular',
     'rest_framework',
     'api',
+    'corsheaders'
 ]
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -27,6 +31,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
 ]
 ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'
@@ -92,3 +97,5 @@ USE_I18N = True
 USE_TZ = True
 STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+CORS_ALLOW_ALL_ORIGINS = True

@@ -7,6 +7,8 @@ from api import views
 
 router = DefaultRouter()
 router.register(r'catalog', views.KnowledgeCatalogViewSet, basename='catalog')
+router.register(r'departments', views.DepartmentViewSet, basename='departments')
+router.register(r'folders', views.FolderViewSet, basename='folders')
 
 urlpatterns = [ 
     path('admin/', admin.site.urls), 
